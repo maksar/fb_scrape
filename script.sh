@@ -1,0 +1,1 @@
+./fb_scrape.rb group_ids | while read -r group_id; do ./fb_scrape.rb post_ids $group_id; done | ruby fb_scrape.rb fetch | pv | csvsql -d ',' --db sqlite:///database.sqlite3 --insert --no-inference --blanks

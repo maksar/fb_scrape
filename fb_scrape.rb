@@ -41,7 +41,7 @@ end
 
 class FBScrapeCLI
 
-  COMMANDS = [:post_ids, :fetch, :filter, :help]
+  COMMANDS = [:group_ids, :post_ids, :fetch, :filter, :help]
   IDS_LIMIT = 1000
   RETRY_TIME = 5 * 60
   FIELDS = ['id', 'from', 'to', 'message', 'created_time', 'updated_time', 'type', 'picture', 'link', 'source', 'name', 'caption', 'description', 'comments.limit(10000)%7Bid,from,message,created_time,likes.limit(10000),comments.limit(10000)%7Bid,from,message,created_time,likes.limit(10000)%7D%7D', 'likes.limit(10000)']
@@ -83,6 +83,17 @@ class FBScrapeCLI
     exit 1
   end
 
+  def group_ids
+    require_access_token!
+
+    if @args.length != 0
+      puts "[usage] fb_scrape group_ids"
+      exit 1
+    end
+
+    ids("community/groups")
+  end
+
   def post_ids
     require_access_token!
 
@@ -91,8 +102,11 @@ class FBScrapeCLI
       exit 1
     end
 
-    group_id = @args[0]
-    uri = URI("https://graph.facebook.com/v2.3/#{group_id}/feed?access_token=#{@access_token}&fields=id&limit=#{IDS_LIMIT}")
+    ids("#{@args[0]}/feed")
+  end
+
+  def ids(part)
+    uri = URI("https://graph.facebook.com/v2.3/#{part}?access_token=#{@access_token}&fields=id&limit=#{IDS_LIMIT}")
 
     catch :end do
       graph_connection do |conn|
@@ -171,7 +185,7 @@ class FBScrapeCLI
 
     CSV(STDOUT) do |csv|
       headers_written = false
-      input_csv = CSV.new(STDIN, headers: :first_row)
+      input_csv = CSV.new(STDIN, headers: :first_row, force_quote: true)
       input_csv.each do |row|
         unless headers_written
           csv << input_csv.headers
@@ -204,6 +218,43 @@ class FBScrapeCLI
   def require_access_token!
     if @access_token.nil?
       raise "You must specify a Facebook Graph API access token in ACCESS_TOKEN."
+    end
+  end
+
+  def process_comments(parent, comments, level, group_id, group_name, rows)
+    comments.each_with_index do |comment, index|
+
+      likes = comment['likes'] ? comment['likes']['data'] : []
+
+      rows << {
+        id: comment['id'],
+        level: level,
+        from_id: comment['from'] ? comment['from']['id'] : nil,
+        from_name: comment['from'] ? comment['from']['name'] : nil,
+        group_id: group_id,
+        group_name: group_name,
+        message: comment['message'],
+        created_time: normalize_date(comment['created_time']),
+        type: 'comment',
+        like_count: likes.size,
+        parent_id: parent['id'],
+        parent_type: parent['type'] || 'comment',
+        comment_index: index
+      }
+
+      likes.each do |like|
+        rows << {
+          from_id: like['id'],
+          from_name: like['name'],
+          group_id: group_id,
+          group_name: group_name,
+          parent_id: comment['id'],
+          parent_type: 'comment',
+          type: 'like'
+        }
+      end
+
+      process_comments(comment, comment['comments'] ? comment['comments']['data'] : [], level + 1, group_id, group_name, rows)
     end
   end
 
@@ -258,74 +309,7 @@ class FBScrapeCLI
           }
         end
 
-        comments.each_with_index do |comment, index|
-
-          likes = comment['likes'] ? comment['likes']['data'] : []
-          subcomments = comment['comments'] ? comment['comments']['data'] : []
-
-          rows << {
-            id: comment['id'],
-            level: 1,
-            from_id: comment['from'] ? comment['from']['id'] : nil,
-            from_name: comment['from'] ? comment['from']['name'] : nil,
-            group_id: group_id,
-            group_name: group_name,
-            message: comment['message'],
-            created_time: normalize_date(comment['created_time']),
-            type: 'comment',
-            like_count: likes.size,
-            parent_id: json['id'],
-            parent_type: json['type'],
-            comment_index: index
-          }
-
-          likes.each do |like|
-            rows << {
-              from_id: like['id'],
-              from_name: like['name'],
-              group_id: group_id,
-              group_name: group_name,
-              parent_id: comment['id'],
-              parent_type: 'comment',
-              type: 'like'
-            }
-          end
-
-          subcomments.each_with_index do |subcomment, index|
-
-            likes = subcomment['likes'] ? subcomment['likes']['data'] : []
-
-            rows << {
-              id: subcomment['id'],
-              level: 2,
-              from_id: subcomment['from'] ? subcomment['from']['id'] : nil,
-              from_name: subcomment['from'] ? subcomment['from']['name'] : nil,
-              group_id: group_id,
-              group_name: group_name,
-              message: subcomment['message'],
-              created_time: normalize_date(subcomment['created_time']),
-              type: 'comment',
-              like_count: likes.size,
-              parent_id: comment['id'],
-              parent_type: 'comment',
-              comment_index: index
-            }
-
-            likes.each do |like|
-              rows << {
-                from_id: like['id'],
-                from_name: like['name'],
-                group_id: group_id,
-                group_name: group_name,
-                parent_id: subcomment['id'],
-                parent_type: 'comment',
-                type: 'like'
-              }
-            end
-
-          end
-
-        end
+        process_comments(json, comments, 1, group_id, group_name, rows)
 
         rows.map { |r| hash_to_row(r) }
 
